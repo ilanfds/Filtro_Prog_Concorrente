@@ -1,21 +1,10 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-ImagemPPM *imagem;
-int escolha;
+#include <sys/time.h>
 
 typedef struct {
-   //numero de linhas da imagem
-   long int nlinhas;
-   //numero de threads 
-   short int nthreads;
-   //identificador da thread
-   short int id;
-} t_args;  
-
-typedef struct {
-    unsigned char r, g, b;  // cada canal vai de 0 a 255
+    unsigned char r, g, b;
 } Pixel;
 
 typedef struct {
@@ -23,153 +12,231 @@ typedef struct {
     Pixel **pixels;
 } ImagemPPM;
 
-void* convolução(void* args) {
-    t_args *arg = (t_args*) args; //argumentos da thread
-    int ini, fim, fatia; //auxiliares para divisao do vetor em blocos
-    fatia = arg->nlinhas / arg->nthreads;
-    ini = arg->id * fatia;
-    if (arg->id == arg->nthreads - 1) fim = arg->nlinhas; //ultima thread pega o resto
-    else fim = ini + fatia;
-    
-    // Aplicar o filtro escolhido na fatia da imagem
+typedef struct {
+    int id;
+    int nthreads;
+    int nlinhas;
+} t_args;
+
+// variáveis globais (entrada e saída)
+ImagemPPM *imagem = NULL;
+ImagemPPM *imagem_saida = NULL;
+int escolha = 0;
+
+// protótipos
+ImagemPPM* lerImagem(const char* nomeArquivo);
+void salvarImagem(const char* nomeArquivo, ImagemPPM *img);
+void liberarImagem(ImagemPPM *img);
+Pixel aplicarFiltro(Pixel **pixels, int x, int y, int largura, int altura, int escolha);
+void* thread_convolucao(void* arg);
+
+void* thread_convolucao(void* arg) {
+    t_args *a = (t_args*) arg;
+    int id = a->id;
+    int nthreads = a->nthreads;
+    int altura = a->nlinhas;
+
+    int ini = (id * altura) / nthreads;
+    int fim = ((id + 1) * altura) / nthreads;
+    if (ini < 0) ini = 0;
+    if (fim > altura) fim = altura;
+
     for (int y = ini; y < fim; y++) {
         for (int x = 0; x < imagem->largura; x++) {
-            imagem->pixels[y][x] = aplicarFiltro(imagem->pixels, x, y, imagem->largura, imagem->altura, escolha);
+            imagem_saida->pixels[y][x] = aplicarFiltro(imagem->pixels, x, y, imagem->largura, imagem->altura, escolha);
         }
     }
-
-    pthread_exit(NULL);
+    return NULL;
 }
 
 Pixel aplicarFiltro(Pixel **pixels, int x, int y, int largura, int altura, int escolha) {
-    Pixel resultado = {0, 0, 0};
-    int filtro[3][3];
+    Pixel resultado = {0,0,0};
+    int kernel[3][3];
+    int somaKernel = 0;
+
     switch (escolha) {
-        case 1: // Blur
-            filtro[0][0] = 1; filtro[0][1] = 1; filtro[0][2] = 1;
-            filtro[1][0] = 1; filtro[1][1] = 1; filtro[1][2] = 1;
-            filtro[2][0] = 1; filtro[2][1] = 1; filtro[2][2] = 1;
+        case 1: // Blur (normalizado)
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++) kernel[i][j] = 1;
+            somaKernel = 9;
             break;
         case 2: // Sharpen
-            filtro[0][0] = 0; filtro[0][1] = -1; filtro[0][2] = 0;
-            filtro[1][0] = -1; filtro[1][1] = 5; filtro[1][2] = -1;
-            filtro[2][0] = 0; filtro[2][1] = -1; filtro[2][2] = 0;
+            kernel[0][0]=0;  kernel[0][1]=-1; kernel[0][2]=0;
+            kernel[1][0]=-1; kernel[1][1]=5;  kernel[1][2]=-1;
+            kernel[2][0]=0;  kernel[2][1]=-1; kernel[2][2]=0;
+            somaKernel = 1; // soma do kernel (pode ser usado para normalizar, se desejar)
             break;
         case 3: // Edge Detection
-            filtro[0][0] = -1; filtro[0][1] = -1; filtro[0][2] = -1;
-            filtro[1][0] = -1; filtro[1][1] = 8; filtro[1][2] = -1;
-            filtro[2][0] = -1; filtro[2][1] = -1; filtro[2][2] = -1;
+            kernel[0][0]=-1; kernel[0][1]=-1; kernel[0][2]=-1;
+            kernel[1][0]=-1; kernel[1][1]=8;  kernel[1][2]=-1;
+            kernel[2][0]=-1; kernel[2][1]=-1; kernel[2][2]=-1;
+            somaKernel = 0; // soma zero (não dividir)
             break;
         default:
-            return pixels[y][x]; // Nenhum filtro aplicado
+            return pixels[y][x];
     }
+
     int somaR = 0, somaG = 0, somaB = 0;
     for (int fy = -1; fy <= 1; fy++) {
         for (int fx = -1; fx <= 1; fx++) {
-            int imgX = x + fx;
-            int imgY = y + fy;
-            if (imgX >= 0 && imgX < largura && imgY >= 0 && imgY < altura) {
-                somaR += pixels[imgY][imgX].r * filtro[fy + 1][fx + 1];
-                somaG += pixels[imgY][imgX].g * filtro[fy + 1][fx + 1];
-                somaB += pixels[imgY][imgX].b * filtro[fy + 1][fx + 1];
-            }
+            int ix = x + fx;
+            int iy = y + fy;
+            if (ix < 0 || ix >= largura || iy < 0 || iy >= altura) continue;
+            int k = kernel[fy+1][fx+1];
+            somaR += pixels[iy][ix].r * k;
+            somaG += pixels[iy][ix].g * k;
+            somaB += pixels[iy][ix].b * k;
         }
     }
-    resultado.r = (somaR < 0) ? 0 : (somaR > 255) ? 255 : somaR;
-    resultado.g = (somaG < 0) ? 0 : (somaG > 255) ? 255 : somaG;
-    resultado.b = (somaB < 0) ? 0 : (somaB > 255) ? 255 : somaB;
+
+    if (somaKernel != 0) {
+        somaR /= somaKernel;
+        somaG /= somaKernel;
+        somaB /= somaKernel;
+    }
+
+    // clipping entre 0 e 255
+    if (somaR < 0) somaR = 0;
+    if (somaR > 255) somaR = 255;
+    if (somaG < 0) somaG = 0;
+    if (somaG > 255) somaG = 255;
+    if (somaB < 0) somaB = 0;
+    if (somaB > 255) somaB = 255;
+
+    resultado.r = (unsigned char)somaR;
+    resultado.g = (unsigned char)somaG;
+    resultado.b = (unsigned char)somaB;
     return resultado;
 }
 
-
 ImagemPPM* lerImagem(const char* nomeArquivo) {
-    FILE *fp = fopen(nomeArquivo, "rb");
-    if (!fp) {
-        perror("Erro ao abrir arquivo");
-        return NULL;
+    FILE *f = fopen(nomeArquivo, "rb");
+    if (!f) { perror("erro ao abrir"); return NULL; }
+
+    char tipo[3];
+    if (fscanf(f, "%2s", tipo) != 1) { fclose(f); return NULL; }
+    if (tipo[0] != 'P' || tipo[1] != '6') { fprintf(stderr, "Nao eh P6\n"); fclose(f); return NULL; }
+
+    // pular comentários e ler largura/altura/max
+    int c = fgetc(f);
+    while (c == '\n' || c == '\r' || c == ' ' || c == '\t') c = fgetc(f);
+    if (c == '#') {
+        // pula até fim da linha
+        while (c != '\n' && c != EOF) c = fgetc(f);
+    } else {
+        ungetc(c, f);
     }
 
-    char formato[3];
-    if (fscanf(fp, "%2s", formato) != 1 || strcmp(formato, "P6") != 0) {
-        fprintf(stderr, "Formato não suportado (somente P6)\n");
-        fclose(fp);
+    int largura, altura, maxval;
+    if (fscanf(f, "%d %d %d", &largura, &altura, &maxval) != 3) {
+        fprintf(stderr, "Cabecalho invalido\n");
+        fclose(f);
         return NULL;
     }
+    fgetc(f); // consome um '\n' após o cabeçalho
 
-    // Ignorar comentários no arquivo ppm
-    int c = getc(fp);
-    while (c == '#') {
-        while (getc(fp) != '\n');
-        c = getc(fp);
+    if (maxval != 255) {
+        fprintf(stderr, "MaxVal diferente de 255 nao suportado\n");
+        fclose(f);
+        return NULL;
     }
-    ungetc(c, fp);
 
     ImagemPPM *img = malloc(sizeof(ImagemPPM));
-    fscanf(fp, "%d %d", &img->largura, &img->altura);
-
-    int max_val; // valor maximo de cor rgb
-    fscanf(fp, "%d", &max_val);
-    fgetc(fp); // consumir o \n depois do max_val
-
-    img->pixels = malloc(img->altura * sizeof(Pixel *));
-    for (int i = 0; i < img->altura; i++) {
-        img->pixels[i] = malloc(img->largura * sizeof(Pixel));
-        fread(img->pixels[i], sizeof(Pixel), img->largura, fp);
+    img->largura = largura;
+    img->altura = altura;
+    img->pixels = malloc(altura * sizeof(Pixel*));
+    for (int i = 0; i < altura; i++) {
+        img->pixels[i] = malloc(largura * sizeof(Pixel));
+        size_t lidos = fread(img->pixels[i], sizeof(Pixel), largura, f);
+        if (lidos != (size_t)largura) {
+            fprintf(stderr, "Erro lendo pixels (linha %d)\n", i);
+            // liberar parcialmente
+            for (int j = 0; j <= i; j++) free(img->pixels[j]);
+            free(img->pixels);
+            free(img);
+            fclose(f);
+            return NULL;
+        }
     }
 
-    fclose(fp);
+    fclose(f);
     return img;
+}
+
+void salvarImagem(const char* nomeArquivo, ImagemPPM *img) {
+    FILE *f = fopen(nomeArquivo, "wb");
+    if (!f) { perror("erro salvar"); return; }
+    fprintf(f, "P6\n%d %d\n255\n", img->largura, img->altura);
+    for (int i = 0; i < img->altura; i++) {
+        fwrite(img->pixels[i], sizeof(Pixel), img->largura, f);
+    }
+    fclose(f);
+}
+
+void liberarImagem(ImagemPPM *img) {
+    if (!img) return;
+    for (int i = 0; i < img->altura; i++) free(img->pixels[i]);
+    free(img->pixels);
+    free(img);
 }
 
 int main(int argc, char *argv[]) {
     if (argc < 4) {
-        fprintf(stderr, "Uso: %s <imagem_entrada> <arquivo_saida> <nthreads>\n", argv[0]);
+        fprintf(stderr, "Uso: %s <entrada.ppm> <saida.ppm> <nthreads>\n", argv[0]);
         return 1;
     }
-
-    char *imagem_entrada = argv[1];
-    char *imagem_saida = argv[2];
+    const char *arquivo_in = argv[1];
+    const char *arquivo_out = argv[2];
     int nthreads = atoi(argv[3]);
-    pthread_t *threads;
-    t_args *args;
+    if (nthreads <= 0) nthreads = 1;
 
-    // Carregar a imagem PPM
-    imagem = lerImagem(imagem_entrada);
-    if (imagem == NULL) {
-        return 1;
+    imagem = lerImagem(arquivo_in);
+    if (!imagem) return 1;
+
+    // criar imagem de saída (mesma dimensão)
+    imagem_saida = malloc(sizeof(ImagemPPM));
+    imagem_saida->largura = imagem->largura;
+    imagem_saida->altura = imagem->altura;
+    imagem_saida->pixels = malloc(imagem->altura * sizeof(Pixel*));
+    for (int i = 0; i < imagem->altura; i++) {
+        imagem_saida->pixels[i] = malloc(imagem->largura * sizeof(Pixel));
     }
 
-    // Alocar memória para threads e argumentos
-    threads = (pthread_t*) malloc(nthreads * sizeof(pthread_t));
-    args = (t_args*) malloc(nthreads * sizeof(t_args));
+    printf("Escolha o filtro:\n1) Blur\n2) Sharpen\n3) Edge Detection\n> ");
+    if (scanf("%d", &escolha) != 1) escolha = 1;
 
-    printf("Digite o numero do filtro a ser aplicado:\n");
-    printf("1. Blur\n");
-    printf("2. Sharpen\n");
-    printf("3. Edge Detection\n");
-    scanf("%d", &escolha);  
+    pthread_t *threads = malloc(nthreads * sizeof(pthread_t));
+    t_args *args = malloc(nthreads * sizeof(t_args));
 
+    struct timeval t0, t1;
+    gettimeofday(&t0, NULL);
 
-    // Criar threads
     for (int i = 0; i < nthreads; i++) {
-        args[i].nlinhas = imagem->altura; // Exemplo: dividir por linhas
-        args[i].nthreads = nthreads;
         args[i].id = i;
-        pthread_create(&threads[i], NULL, convolução, (void*) &args[i]);
+        args[i].nthreads = nthreads;
+        args[i].nlinhas = imagem->altura;
+        if (pthread_create(&threads[i], NULL, thread_convolucao, &args[i]) != 0) {
+            perror("pthread_create");
+            // fallback: continuar sem criar mais threads
+            for (int j = 0; j < i; j++) pthread_join(threads[j], NULL);
+            break;
+        }
     }
 
-    // Esperar todas as threads terminarem
-    for (int i = 0; i < nthreads; i++) {
-        pthread_join(threads[i], NULL);
-    }
+    for (int i = 0; i < nthreads; i++) pthread_join(threads[i], NULL);
 
-    // Salvar a imagem processada
-    // (Implementar a função de salvamento da imagem aqui)
+    gettimeofday(&t1, NULL);
+    double tempo = (t1.tv_sec - t0.tv_sec) + (t1.tv_usec - t0.tv_usec)/1e6;
+    printf("Tempo de execução: %.6f s\n", tempo);
 
+    salvarImagem(arquivo_out, imagem_saida);
+
+    printf("Imagem salva em '%s'", arquivo_out);
+
+    // liberar tudo
+    liberarImagem(imagem);
+    liberarImagem(imagem_saida);
     free(threads);
     free(args);
-    // Liberar memória da imagem
-    // (Implementar a liberação da memória aqui)
-
     return 0;
 }
