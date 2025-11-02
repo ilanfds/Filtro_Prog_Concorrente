@@ -1,21 +1,16 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-ImagemPPM *imagem;
-int escolha;
+#include <string.h>
 
 typedef struct {
-   //numero de linhas da imagem
-   long int nlinhas;
-   //numero de threads 
-   short int nthreads;
-   //identificador da thread
-   short int id;
+   long int nlinhas;   // número de linhas da imagem
+   short int nthreads; // número de threads
+   short int id;       // identificador da thread
 } t_args;  
 
 typedef struct {
-    unsigned char r, g, b;  // cada canal vai de 0 a 255
+    unsigned char r, g, b;  // cada canal de cor vai de 0 a 255
 } Pixel;
 
 typedef struct {
@@ -23,24 +18,11 @@ typedef struct {
     Pixel **pixels;
 } ImagemPPM;
 
-void* convolução(void* args) {
-    t_args *arg = (t_args*) args; //argumentos da thread
-    int ini, fim, fatia; //auxiliares para divisao do vetor em blocos
-    fatia = arg->nlinhas / arg->nthreads;
-    ini = arg->id * fatia;
-    if (arg->id == arg->nthreads - 1) fim = arg->nlinhas; //ultima thread pega o resto
-    else fim = ini + fatia;
-    
-    // Aplicar o filtro escolhido na fatia da imagem
-    for (int y = ini; y < fim; y++) {
-        for (int x = 0; x < imagem->largura; x++) {
-            imagem->pixels[y][x] = aplicarFiltro(imagem->pixels, x, y, imagem->largura, imagem->altura, escolha);
-        }
-    }
+ImagemPPM *imagem;        // imagem original
+ImagemPPM *imagemAux;     // imagem auxiliar para escrever resultados
+int escolha;
 
-    pthread_exit(NULL);
-}
-
+// Função que aplica o filtro 3x3 em um pixel
 Pixel aplicarFiltro(Pixel **pixels, int x, int y, int largura, int altura, int escolha) {
     Pixel resultado = {0, 0, 0};
     int filtro[3][3];
@@ -63,6 +45,7 @@ Pixel aplicarFiltro(Pixel **pixels, int x, int y, int largura, int altura, int e
         default:
             return pixels[y][x]; // Nenhum filtro aplicado
     }
+
     int somaR = 0, somaG = 0, somaB = 0;
     for (int fy = -1; fy <= 1; fy++) {
         for (int fx = -1; fx <= 1; fx++) {
@@ -75,13 +58,33 @@ Pixel aplicarFiltro(Pixel **pixels, int x, int y, int largura, int altura, int e
             }
         }
     }
+
     resultado.r = (somaR < 0) ? 0 : (somaR > 255) ? 255 : somaR;
     resultado.g = (somaG < 0) ? 0 : (somaG > 255) ? 255 : somaG;
     resultado.b = (somaB < 0) ? 0 : (somaB > 255) ? 255 : somaB;
+
     return resultado;
 }
 
+// Função executada por cada thread
+void* convolucao(void* args) {
+    t_args *arg = (t_args*) args;
+    int ini, fim, fatia;
+    fatia = arg->nlinhas / arg->nthreads;
+    ini = arg->id * fatia;
+    if (arg->id == arg->nthreads - 1) fim = arg->nlinhas;
+    else fim = ini + fatia;
 
+    for (int y = ini; y < fim; y++) {
+        for (int x = 0; x < imagem->largura; x++) {
+            imagemAux->pixels[y][x] = aplicarFiltro(imagem->pixels, x, y, imagem->largura, imagem->altura, escolha);
+        }
+    }
+
+    pthread_exit(NULL);
+}
+
+// Ler imagem PPM formato P6
 ImagemPPM* lerImagem(const char* nomeArquivo) {
     FILE *fp = fopen(nomeArquivo, "rb");
     if (!fp) {
@@ -96,7 +99,6 @@ ImagemPPM* lerImagem(const char* nomeArquivo) {
         return NULL;
     }
 
-    // Ignorar comentários no arquivo ppm
     int c = getc(fp);
     while (c == '#') {
         while (getc(fp) != '\n');
@@ -107,9 +109,9 @@ ImagemPPM* lerImagem(const char* nomeArquivo) {
     ImagemPPM *img = malloc(sizeof(ImagemPPM));
     fscanf(fp, "%d %d", &img->largura, &img->altura);
 
-    int max_val; // valor maximo de cor rgb
+    int max_val;
     fscanf(fp, "%d", &max_val);
-    fgetc(fp); // consumir o \n depois do max_val
+    fgetc(fp);
 
     img->pixels = malloc(img->altura * sizeof(Pixel *));
     for (int i = 0; i < img->altura; i++) {
@@ -121,6 +123,33 @@ ImagemPPM* lerImagem(const char* nomeArquivo) {
     return img;
 }
 
+// Salvar imagem PPM
+void salvarImagem(const char* nomeArquivo, ImagemPPM *img) {
+    FILE *fp = fopen(nomeArquivo, "wb");
+    if (!fp) {
+        perror("Erro ao criar arquivo de saída");
+        return;
+    }
+
+    fprintf(fp, "P6\n%d %d\n255\n", img->largura, img->altura);
+    for (int i = 0; i < img->altura; i++) {
+        fwrite(img->pixels[i], sizeof(Pixel), img->largura, fp);
+    }
+
+    fclose(fp);
+}
+
+// Liberar memória da imagem
+void liberarImagem(ImagemPPM *img) {
+    if (!img) return;
+    for (int i = 0; i < img->altura; i++) {
+        free(img->pixels[i]);
+    }
+    free(img->pixels);
+    free(img);
+}
+
+// Função principal
 int main(int argc, char *argv[]) {
     if (argc < 4) {
         fprintf(stderr, "Uso: %s <imagem_entrada> <arquivo_saida> <nthreads>\n", argv[0]);
@@ -130,18 +159,21 @@ int main(int argc, char *argv[]) {
     char *imagem_entrada = argv[1];
     char *imagem_saida = argv[2];
     int nthreads = atoi(argv[3]);
-    pthread_t *threads;
-    t_args *args;
 
-    // Carregar a imagem PPM
+    pthread_t *threads = malloc(nthreads * sizeof(pthread_t));
+    t_args *args = malloc(nthreads * sizeof(t_args));
+
+    // Carregar a imagem original
     imagem = lerImagem(imagem_entrada);
-    if (imagem == NULL) {
-        return 1;
-    }
+    if (!imagem) return 1;
 
-    // Alocar memória para threads e argumentos
-    threads = (pthread_t*) malloc(nthreads * sizeof(pthread_t));
-    args = (t_args*) malloc(nthreads * sizeof(t_args));
+    // Criar imagem auxiliar
+    imagemAux = malloc(sizeof(ImagemPPM));
+    imagemAux->largura = imagem->largura;
+    imagemAux->altura = imagem->altura;
+    imagemAux->pixels = malloc(imagemAux->altura * sizeof(Pixel *));
+    for (int i = 0; i < imagemAux->altura; i++)
+        imagemAux->pixels[i] = malloc(imagemAux->largura * sizeof(Pixel));
 
     printf("Digite o numero do filtro a ser aplicado:\n");
     printf("1. Blur\n");
@@ -149,27 +181,32 @@ int main(int argc, char *argv[]) {
     printf("3. Edge Detection\n");
     scanf("%d", &escolha);  
 
-
     // Criar threads
     for (int i = 0; i < nthreads; i++) {
-        args[i].nlinhas = imagem->altura; // Exemplo: dividir por linhas
+        args[i].nlinhas = imagem->altura;
         args[i].nthreads = nthreads;
         args[i].id = i;
-        pthread_create(&threads[i], NULL, convolução, (void*) &args[i]);
+        pthread_create(&threads[i], NULL, convolucao, (void*)&args[i]);
     }
 
-    // Esperar todas as threads terminarem
+    // Esperar threads
     for (int i = 0; i < nthreads; i++) {
         pthread_join(threads[i], NULL);
     }
 
-    // Salvar a imagem processada
-    // (Implementar a função de salvamento da imagem aqui)
+    // Copiar resultado da imagem auxiliar para a imagem principal
+    for (int i = 0; i < imagem->altura; i++)
+        for (int j = 0; j < imagem->largura; j++)
+            imagem->pixels[i][j] = imagemAux->pixels[i][j];
 
+    // Salvar a imagem processada
+    salvarImagem(imagem_saida, imagem);
+
+    // Liberar memória
+    liberarImagem(imagem);
+    liberarImagem(imagemAux);
     free(threads);
     free(args);
-    // Liberar memória da imagem
-    // (Implementar a liberação da memória aqui)
 
     return 0;
 }
