@@ -5,10 +5,10 @@
 #include <unistd.h>   // Para usleep (opcional)
 
 // --- Variáveis de Configuração ---
-#define IMAGEM_ENTRADA  "entrada.ppm"
-#define IMAGEM_SAIDA_SEQ "saida_seq.ppm"
-#define IMAGEM_SAIDA_CONC "saida_conc.ppm"
-#define N_THREADS       4     // Número de threads para o teste concorrente
+#define IMAGEM_ENTRADA  "neymar_entrada.ppm"
+#define IMAGEM_SAIDA_SEQ "neymar_saida_seq.ppm"
+#define IMAGEM_SAIDA_CONC "neymar_saida_conc.ppm"
+#define N_THREADS       3     // Número de threads para o teste concorrente
 #define FILTRO_ESCOLHA  '1'   // 1: Blur, 2: Sharpen, 3: Edge Detection
 
 // --- Nomes dos Binários ---
