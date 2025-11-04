@@ -10,6 +10,7 @@
 #define IMAGEM_SAIDA_CONC "neymar_saida_conc.ppm"
 #define N_THREADS       3     // Número de threads para o teste concorrente
 #define FILTRO_ESCOLHA  '1'   // 1: Blur, 2: Sharpen, 3: Edge Detection
+#define N_REPETICOES    100   // Quantidade de vezes que cada código será executado
 
 // --- Nomes dos Binários ---
 #define BIN_SEQ         "./filtro_seq_bin"
@@ -17,6 +18,7 @@
 
 /**
  * Função que mede o tempo de execução de um comando shell.
+ * NOTA: O tempo medido é apenas o do comando em si, isolando chamadas de printf e gettimeofday externas.
  * @param comando O comando a ser executado.
  * @return O tempo de execução em segundos (double).
  */
@@ -25,34 +27,59 @@ double medir_tempo_execucao(const char *comando) {
     double tempo_usado;
     int status;
 
-    printf("\n> Comando: %s\n", comando);
-
     gettimeofday(&start, NULL);
+    // Apenas a execução do comando está sendo cronometrada aqui.
     status = system(comando);
     gettimeofday(&end, NULL);
 
     if (status != 0) {
-        fprintf(stderr, "ERRO: O comando falhou com status de saída %d.\n", status);
-        return -1.0; // Retorna um valor negativo em caso de erro
+        // Log de erro, mas permitindo que o loop continue se possível
+        fprintf(stderr, "ERRO: O comando '%s' falhou com status de saída %d.\n", comando, status);
+        return -1.0; 
     }
 
     tempo_usado = (end.tv_sec - start.tv_sec) + 
                   (end.tv_usec - start.tv_usec) / 1000000.0;
     
-    printf("  Tempo de parede: %.6f segundos.\n", tempo_usado);
     return tempo_usado;
 }
 
+/**
+ * Função utilitária para calcular a média de um array de doubles.
+ * @param tempos O array de tempos.
+ * @param n O número de elementos no array.
+ * @return A média dos tempos.
+ */
+double calcular_media(const double *tempos, int n) {
+    double soma = 0.0;
+    for (int i = 0; i < n; i++) {
+        // Ignorar resultados negativos (erros) no cálculo da média
+        if (tempos[i] >= 0) {
+            soma += tempos[i];
+        }
+    }
+    return soma / n;
+}
+
+
 int main(void) {
-    double tempo_seq, tempo_conc;
-    char comando[512];
+    double tempos_seq[N_REPETICOES];
+    double tempos_conc[N_REPETICOES];
+    double media_seq, media_conc;
+    int vitorias_seq = 0;
+    int vitorias_conc = 0;
+    int empates = 0;
+    char comando_seq[512];
+    char comando_conc[512];
 
     printf("========================================================\n");
-    printf("              COMPARAÇÃO DE DESEMPENHO EM C             \n");
+    printf("        COMPARAÇÃO DE DESEMPENHO ESTATÍSTICA EM C       \n");
     printf("========================================================\n");
     printf("Imagem de Teste: %s\n", IMAGEM_ENTRADA);
     printf("Threads Concorrentes: %d\n", N_THREADS);
-    printf("Filtro Escolhido: %c (Blur/Sharpen/Edge)\n", FILTRO_ESCOLHA);
+    printf("Filtro Escolhido: %c\n", FILTRO_ESCOLHA);
+    printf("** Número de Repetições: %d **\n", N_REPETICOES);
+
 
     // 1. Compilação
     printf("\n--- 🛠️  Compilando programas ---\n");
@@ -60,45 +87,79 @@ int main(void) {
         fprintf(stderr, "Falha na compilação do filtro_seq.c\n");
         return 1;
     }
+    // Certifique-se de que o compilador suporta -pthread (para POSIX threads)
     if (system("gcc Concorrente.c -o concorrente_bin -pthread -lm") != 0) {
         fprintf(stderr, "Falha na compilação do Concorrente.c\n");
         return 1;
     }
 
-    // 2. Execução Sequencial
-    printf("\n--- ⏱️  Execução Sequencial ---\n");
-    // O filtro_seq.c usa um kernel fixo (Blur).
-    sprintf(comando, "%s %s %s", BIN_SEQ, IMAGEM_ENTRADA, IMAGEM_SAIDA_SEQ);
-    tempo_seq = medir_tempo_execucao(comando);
-    if (tempo_seq < 0) return 1;
-
-    // 3. Execução Concorrente
-    printf("\n--- ⏱️  Execução Concorrente (%d Threads) ---\n", N_THREADS);
-    // O concorrente.c recebe o filtro por stdin, que é simulado com 'echo' e 'pipe'
-    sprintf(comando, "echo %c | %s %s %s %d", 
+    // Preparação dos comandos para o loop
+    sprintf(comando_seq, "%s %s %s", BIN_SEQ, IMAGEM_ENTRADA, IMAGEM_SAIDA_SEQ);
+    sprintf(comando_conc, "echo %c | %s %s %s %d", 
             FILTRO_ESCOLHA, BIN_CONC, IMAGEM_ENTRADA, IMAGEM_SAIDA_CONC, N_THREADS);
-    tempo_conc = medir_tempo_execucao(comando);
-    if (tempo_conc < 0) return 1;
+    
+    printf("\n--- ⏱️  Executando %d Repetições ---\n", N_REPETICOES);
 
-    // 4. Análise de Resultados
+    // 2. Loop de Execução e Medição
+    for (int i = 0; i < N_REPETICOES; i++) {
+        // Execução Sequencial
+        tempos_seq[i] = medir_tempo_execucao(comando_seq);
+        
+        // Execução Concorrente
+        tempos_conc[i] = medir_tempo_execucao(comando_conc);
+        
+        // Contagem de Vitórias (apenas se ambos executaram sem erro)
+        if (tempos_seq[i] >= 0 && tempos_conc[i] >= 0) {
+            if (tempos_seq[i] < tempos_conc[i]) {
+                vitorias_seq++;
+            } else if (tempos_conc[i] < tempos_seq[i]) {
+                vitorias_conc++;
+            } else {
+                empates++;
+            }
+        }
+
+        // Exibição de progresso
+        if ((i + 1) % 10 == 0 || i == N_REPETICOES - 1) {
+            printf("  Repetição %d/%d concluída.\r", i + 1, N_REPETICOES);
+            fflush(stdout); // Garante que o progresso seja exibido
+        }
+    }
+    printf("\n"); // Nova linha após o progresso
+
+    // 3. Análise de Resultados Estatísticos
+    media_seq = calcular_media(tempos_seq, N_REPETICOES);
+    media_conc = calcular_media(tempos_conc, N_REPETICOES);
+
     printf("\n========================================================\n");
-    printf("               🏆 RESULTADO FINAL DA COMPARAÇÃO          \n");
+    printf("            📊 ESTATÍSTICAS FINAIS (%d REPETIÇÕES)        \n", N_REPETICOES);
     printf("========================================================\n");
-    printf("SEQUENCIAL (1 thread):   %.6f segundos\n", tempo_seq);
-    printf("CONCORRENTE (%d threads): %.6f segundos\n", N_THREADS, tempo_conc);
+
+    // Médias
+    printf("MÉDIA DE TEMPO DE EXECUÇÃO:\n");
+    printf("  SEQUENCIAL (1 thread):   **%.6f segundos**\n", media_seq);
+    printf("  CONCORRENTE (%d threads): **%.6f segundos**\n", N_THREADS, media_conc);
     printf("--------------------------------------------------------\n");
 
-    if (tempo_seq < tempo_conc) {
-        printf("Conclusão: O código SEQUENCIAL foi o mais rápido.\n");
-    } else if (tempo_conc < tempo_seq) {
-        double speedup = tempo_seq / tempo_conc;
-        printf("Conclusão: O código CONCORRENTE foi o mais rápido.\n");
-        printf("Ganho de Velocidade (Speedup): %.2fx mais rápido.\n", speedup);
+    // Contagem de Vitórias
+    printf("COMPARAÇÃO (Vitórias por Rodada):\n");
+    printf("  Sequencial foi melhor:   %d vezes\n", vitorias_seq);
+    printf("  Concorrente foi melhor:  %d vezes\n", vitorias_conc);
+    printf("  Empates/Erros:           %d vezes\n", empates + (N_REPETICOES - (vitorias_seq + vitorias_conc + empates)));
+    printf("--------------------------------------------------------\n");
+
+    // Conclusão Baseada na Média
+    if (media_seq < media_conc) {
+        printf("CONLUSÃO PELA MÉDIA: O código SEQUENCIAL foi, em média, o mais rápido.\n");
+    } else if (media_conc < media_seq) {
+        double speedup = media_seq / media_conc;
+        printf("CONLUSÃO PELA MÉDIA: O código CONCORRENTE foi, em média, o mais rápido.\n");
+        printf("Ganho de Velocidade (Speedup médio): **%.2fx** mais rápido.\n", speedup);
     } else {
-        printf("Conclusão: Os tempos de execução foram iguais (ou muito próximos).\n");
+        printf("CONLUSÃO PELA MÉDIA: As médias de tempo foram iguais (ou muito próximas).\n");
     }
 
-    // 5. Limpeza
+    // 4. Limpeza
     printf("\n--- Limpeza de Binários ---\n");
     system("rm -f filtro_seq_bin concorrente_bin");
     
